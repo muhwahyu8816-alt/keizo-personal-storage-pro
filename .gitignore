@@ -14,3 +14,5 @@ server-before-resumable.js
 server-sebelum-resumable.js
 public/index.backup.html
 public/w.html
+*.log
+.DS_Store
