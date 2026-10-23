@@ -14,6 +14,23 @@ const DATA_DIR = path.join(__dirname, "data");
 const TEMP_DIR = path.join(DATA_DIR, "upload-temp");
 const HISTORY_FILE = path.join(DATA_DIR, "upload-history.json");
 fs.mkdirSync(TEMP_DIR, {recursive:true});
+// Bersihkan metadata sementara yang sudah selesai/dibatalkan atau sudah kedaluwarsa 30 hari.
+// Sesi aktif yang lebih baru tetap dipertahankan agar upload bisa dilanjutkan.
+function cleanupUploadTemp(){
+  const now=Date.now(), maxAge=30*24*60*60*1000;
+  try{
+    for(const file of fs.readdirSync(TEMP_DIR)){
+      if(!file.endsWith(".json"))continue;
+      const full=path.join(TEMP_DIR,file);
+      try{
+        const m=JSON.parse(fs.readFileSync(full,"utf8"));
+        const stamp=Date.parse(m.updatedAt||m.createdAt||"")||fs.statSync(full).mtimeMs;
+        if(["success","cancelled"].includes(m.status)||(now-stamp)>maxAge)fs.unlinkSync(full);
+      }catch(e){console.error("Gagal membersihkan metadata sementara:",file,e.message);}
+    }
+  }catch(e){console.error("Gagal memeriksa folder upload-temp:",e.message);}
+}
+cleanupUploadTemp();
 if (!process.env.SESSION_SECRET) throw new Error("SESSION_SECRET belum diatur di .env");
 if (!fs.existsSync(oauthPath)) throw new Error("File OAuth JSON tidak ditemukan: " + oauthPath);
 const oauthConfig = JSON.parse(fs.readFileSync(oauthPath, "utf8"));
@@ -39,7 +56,7 @@ function safeName(name){return String(name||"").trim().replace(/[\/\\\0]/g,"_").
 function mimeFor(type){return type&&/^[\w.+-]+\/[\w.+-]+$/.test(type)?type:"application/octet-stream";}
 function metaPath(id){return path.join(TEMP_DIR,id+".json");}
 function readMeta(id){try{return JSON.parse(fs.readFileSync(metaPath(id),"utf8"));}catch{return null;}}
-function saveMeta(m){fs.writeFileSync(metaPath(m.id),JSON.stringify(m,null,2));}
+function saveMeta(m){m.updatedAt=new Date().toISOString();fs.writeFileSync(metaPath(m.id),JSON.stringify(m,null,2));}
 function driveError(e){return e?.response?.data?.error?.message||e?.message||"Kesalahan Google Drive";}
 
 app.get("/auth/google",(req,res)=>res.redirect(oauth2Client.generateAuthUrl({access_type:"offline",scope:["https://www.googleapis.com/auth/drive"],prompt:"consent"})));
@@ -81,7 +98,7 @@ app.get("/api/upload/:id/status",requireDrive,async(req,res)=>{
  try{
   const r=await req.auth.request({url:m.sessionUrl,method:"PUT",headers:{"Content-Length":"0","Content-Range":`bytes */${m.size}`},data:Buffer.alloc(0),validateStatus:s=>s===200||s===201||s===308||s>=400});
   const range=r.headers.range||r.headers.Range;let received=range?Number(range.match(/-(\d+)$/)?.[1])+1:0;
-  if(r.status===200||r.status===201){m.status="success";m.received=m.size;saveMeta(m);addHistory({...m,sessionUrl:undefined,status:"success",driveFileId:r.data?.id});return res.json({received:m.size,done:true,file:r.data});}
+  if(r.status===200||r.status===201){m.status="success";m.received=m.size;addHistory({...m,sessionUrl:undefined,status:"success",driveFileId:r.data?.id});try{fs.unlinkSync(metaPath(m.id));}catch(e){console.error("Gagal menghapus metadata upload selesai:",e.message);}return res.json({received:m.size,done:true,file:r.data});}
   if(r.status===308){m.received=received;m.status="uploading";saveMeta(m);return res.json({received,done:false,status:m.status});}
   return res.status(410).json({error:"Sesi Google Drive sudah tidak berlaku. Mulai upload baru."});
  }catch(e){res.status(500).json({error:"Tidak bisa memeriksa status upload: "+driveError(e)});}
@@ -93,7 +110,7 @@ app.put("/api/upload/:id/chunk",requireDrive,express.raw({type:"application/octe
  const end=start+buf.length-1;
  try{
   const r=await req.auth.request({url:m.sessionUrl,method:"PUT",headers:{"Content-Type":m.type,"Content-Length":String(buf.length),"Content-Range":`bytes ${start}-${end}/${m.size}`},data:buf,validateStatus:s=>s===200||s===201||s===308||s>=400});
-  if(r.status===200||r.status===201){m.received=m.size;m.status="success";saveMeta(m);addHistory({...m,sessionUrl:undefined,status:"success",driveFileId:r.data?.id});return res.json({received:m.size,done:true,file:r.data});}
+  if(r.status===200||r.status===201){m.received=m.size;m.status="success";addHistory({...m,sessionUrl:undefined,status:"success",driveFileId:r.data?.id});try{fs.unlinkSync(metaPath(m.id));}catch(e){console.error("Gagal menghapus metadata upload selesai:",e.message);}return res.json({received:m.size,done:true,file:r.data});}
   if(r.status===308){const range=r.headers.range||r.headers.Range;const confirmed=range?Number(range.match(/-(\d+)$/)?.[1])+1:end+1;m.received=confirmed;m.status="uploading";saveMeta(m);addHistory({...m,sessionUrl:undefined,status:"uploading"});return res.json({received:confirmed,done:false});}
   const msg=driveError({response:r});res.status(r.status).json({error:"Google Drive menolak bagian upload: "+msg});
  }catch(e){
