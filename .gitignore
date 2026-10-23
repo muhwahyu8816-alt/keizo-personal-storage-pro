@@ -16,3 +16,6 @@ public/index.backup.html
 public/w.html
 *.log
 .DS_Store
+data/
+data-backup-sebelum-pemulihan/
+server.js.backup-sebelum-perbaikan
