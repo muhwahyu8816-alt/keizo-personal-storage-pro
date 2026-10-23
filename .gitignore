@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+client_secret*.json
+credentials*.json
+token*.json
+tokens/
+node_modules/
+uploads/
+data/upload-history.json
+data/upload-temp/
+server backup.js
+server-before-resumable.js
+server-sebelum-resumable.js
+public/index.backup.html
+public/w.html
